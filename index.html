@@ -109,6 +109,11 @@
   .refs ol { font-size: 14px; line-height: 1.5; padding-left: 1.6em; margin-top: 14px; }
   .refs li { margin-bottom: 8px; scroll-margin-top: 24px; }
   .refs li:target { background: var(--accent-soft); border-radius: 4px; }
+  details.fold { margin: 24px auto; border: 1px solid var(--rule); border-radius: 6px; padding: 10px 16px; }
+  details.fold > summary { cursor: pointer; font-family: var(--sans); font-size: 14.5px; font-weight: 600;
+    color: var(--accent); }
+  details.fold[open] > summary { margin-bottom: 4px; }
+  details.fold figure { margin: 12px 0 4px; }
   .robot-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 12px;
     font-family: var(--sans); font-size: 14px; }
   .robot-bar label { font-weight: 600; }
@@ -196,7 +201,12 @@
 
 <p>CCIL needs an accurate local dynamics model and an analytic backward solve, <em>so it doesn't directly scale to pixels</em>; we
   apply it to the embeddings of the frozen epoch-150 baseline encoder. With image observations, CCIL generally
-  lowers pass@$1$ relative to the baseline and underperforms JointAug in both metrics on every task.</p>
+  lowers pass@$1$ relative to the baseline and underperforms JointAug in both metrics on every task. Two factors may explain the
+  gap: even in embedding space, the learned dynamics model is not accurate enough for the backward solve to give
+  reliable labels, and even with accurate state dynamics, CCIL only adds states one step from a demonstration,
+  paired with the action that returns to it. This teaches the policy to correct small deviations, which helps
+  pass@$1$, but adds no new ways of solving the task beyond the finite training set, so the decline in pass@$10$
+  with continued training is only slowed, not prevented.</p>
 
 <figure id="fig-ccil-image">
   <img src="static/images/ccil_image.png"
@@ -207,10 +217,13 @@
 
 <h3 id="genaug"><span class="num">1.3</span>Additional baseline: GenAug</h3>
 
-<p><em><strong>See our OpenReview response and Appendix F.6 of the updated manuscript for details</strong></em>. GenAug falls below the baseline in both pass@$1$ and pass@$10$ on
+<p><em><strong>See our OpenReview response and Appendix F.6 of the updated manuscript for details</strong></em>. Following GenAug, we mask the robot and task objects and use Stable Diffusion
+  inpainting to repaint the table or add a distractor object; each training frame is replaced by an edited variant
+  with probability 0.5 and paired with the original action. GenAug falls below the baseline in both pass@$1$ and pass@$10$ on
   most tasks. Because it edits only the table and background, each robot–object configuration stays paired with
   the same demonstrated action. We hypothesize that the policy learns to <em>ignore appearance and overfits to
-  correlations between control-relevant cues (e.g., robot pose) and actions in the finite demonstration set</em>.</p>
+  correlations between control-relevant cues (e.g., robot pose) and actions in the finite demonstration set</em>. JointAug instead perturbs the robot–object configuration and the
+  action together, so its samples expand the set of situations the policy sees.</p>
 
 <figure id="fig-genaug">
   <img src="static/images/genaug.png"
@@ -218,6 +231,17 @@
   <figcaption><b>GenAug with image observations.</b> Pass@$10$ (solid) and pass@$1$ (dashed) versus training
     epoch on five MimicGen tasks.</figcaption>
 </figure>
+
+<details class="fold">
+  <summary>Example GenAug training observations</summary>
+  <figure id="fig-genaug-obs">
+    <img src="static/images/genaug_obs.png" loading="lazy"
+      alt="Original Square training frames from the agent-view and wrist cameras next to four GenAug variants with repainted tables and inpainted distractor objects.">
+    <figcaption><b>GenAug observations on Square (D2).</b> Each row is one training frame (left: agent view, right:
+      wrist camera): the original, then four generated variants alternating table and distractor edits. Robot and
+      object pixels are unchanged, and all five images are paired with the same demonstrated action.</figcaption>
+  </figure>
+</details>
 
 <p>We have updated the related work section of the manuscript to add discussion of augmentation methods, including
   GTA <span class="cite">[<a href="#ref-2">2</a>]</span>, ROSIE <span class="cite">[<a href="#ref-4">4</a>]</span>/GenAug <span class="cite">[<a href="#ref-3">3</a>]</span>, and CCIL <span class="cite">[<a href="#ref-5">5</a>]</span>.</p>
@@ -293,10 +317,16 @@
 
 <p><strong>Selection by validation losses.</strong> Mean validation action MSE plateaus late in training, with its
   minimum within 0.3% of the final checkpoint's value, so selecting by it effectively gives the final checkpoint
-  (blue). Held-out low-noise $\epsilon$-prediction loss (final two DDIM steps, the same cutoff on every task)
-  selects epoch 100 on all five tasks (teal). Finetuning from epoch 100 ends above our selected checkpoint on
+  (blue). Low-noise $\epsilon$-prediction loss does not measure the error of actions produced by the full
+  sampling chain, and validation denoising or flow-matching loss has been found to correlate poorly with
+  real-world success <span class="cite">[<a href="#ref-6">6</a>]</span>; our criterion instead uses the error of
+  sampled actions. Its cutoff is also not known in advance: the last two DDIM steps come from a diagnostic on
+  Threading D2 alone (Fig. 12 of the updated manuscript) that needed large-scale closed-loop evaluation, whereas
+  our criterion is fully offline with no hand-tuned thresholds. Applying that cutoff to every task, the held-out
+  low-noise loss selects epoch 100 on all five tasks (teal). Finetuning from epoch 100 ends above our selected checkpoint on
   Hammer Cleanup and Mug Cleanup, slightly below on Threading, and well below on Square and 3-Piece Assembly,
-  where epoch 100 is too early for either pass@$1$ or pass@$10$ to have peaked.</p>
+  where epoch 100 is too early for either pass@$1$ or pass@$10$ to have peaked, so a cutoff that works on one
+  task need not identify a good checkpoint on others.</p>
 
 <figure id="fig-lownoise">
   <img src="static/images/lownoise.png"
@@ -310,7 +340,7 @@
 <h2 id="real-robot"><span class="num">5.</span>Real robot results
   <span class="reviewer">Reviewer NdYB</span></h2>
 
-<p>We study a 6-DoF Push-T task with wrist-camera observations and non-prehensile pushing, training a diffusion
+<p><em><strong>See our OpenReview response, Section 6 of main paper and Appendix H.8 of the updated manuscript for details</strong></em>. We study a 6-DoF Push-T task with wrist-camera observations and non-prehensile pushing, training a diffusion
   policy on 680 human demonstrations (60 more held out) for 200 epochs. Our offline criterion selects epoch 46.
   Over 20 fixed start configurations with five attempts each, the selected checkpoint reaches 62% pass@$1$ and
   95% pass@$5$, versus 52% and 75% for the final checkpoint (epoch 200).</p>
@@ -414,6 +444,8 @@
       preprint arXiv:2302.11550</i> (2023).</li>
     <li id="ref-5">Ke, Liyiming, et al. CCIL: Continuity-based data augmentation for corrective imitation
       learning. <i>International Conference on Learning Representations</i>, 2024.</li>
+    <li id="ref-6">Allshire, Arthur, et al. Scalable behavior cloning with open data, training, and evaluation.
+      <i>arXiv preprint arXiv:2606.27375</i> (2026).</li>
   </ol>
 </section>
 
